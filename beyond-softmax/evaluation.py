@@ -19,11 +19,13 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
+import argparse
 import cv2
 import numpy as np
 import os
 import torch.utils.data as torchdata
 
+from config import str2bool
 from data_loaders import configure_metadata
 from data_loaders import get_image_ids
 from data_loaders import get_bounding_boxes
@@ -165,6 +167,38 @@ def compute_bboxes_from_scoremaps(scoremap, scoremap_threshold_list,
 
     return estimated_boxes_at_each_thr, number_of_box_list
 
+def compute_localization_energy_pointing_game(scoremap, box):
+    '''
+    Implementation of Energy-based Pointing Game proposed in Score-CAM.
+    Code from https://github.com/haofanwang/Score-CAM/blob/master/utils/energyPointGame.py 
+
+    Args:
+        box (list): upper left and lower right coordinates of object bounding box
+        scoremap (array): explanation map, ignore the channel
+    '''
+    x1, y1, x2, y2 = box
+    height, width = scoremap.shape # 224 x 224
+
+    #empty = torch.zeros((height, width))
+    empty = np.zeros((height, width), dtype=np.float32)
+    empty[x1:x2, y1:y2] = 1
+
+    mask_bbox = scoremap * empty  
+
+    energy_bbox =  mask_bbox.sum()
+    energy_whole = scoremap.sum()
+
+    if energy_whole == 0 or np.isnan(energy_whole):
+        proportion = 0.0
+        print("scoremap.sum():", scoremap.sum())
+        print("scoremap.min():", scoremap.min(), "scoremap.max():", scoremap.max())
+        print("box:", box)
+        print(f'WARNING : energy_whole is 0 or NaN for image_id')
+    else:
+        proportion = energy_bbox / energy_whole
+
+    return proportion
+
 class CamDataset(torchdata.Dataset):
     def __init__(self, scoremap_path, image_ids):
         self.scoremap_path = scoremap_path
@@ -233,6 +267,10 @@ class BoxEvaluator(LocalizationEvaluator):
         self.image_sizes = get_image_sizes(self.metadata)
         self.gt_bboxes = self._load_resized_boxes(self.original_bboxes)
 
+
+        # self.pointing_game = kwargs.get('pointing_game', False)
+        # self.pointing_game_scores = 0.0
+
     def _load_resized_boxes(self, original_bboxes):
         resized_bbox = {image_id: [
             resize_bbox(bbox, self.image_sizes[image_id],
@@ -253,7 +291,11 @@ class BoxEvaluator(LocalizationEvaluator):
             image_id: string.
             pred_correct: int. 1 if the image is correctly predicted.
         """
-
+        # if self.pointing_game: #NOTE: = Proportion(%)
+        #     # Only experiment on 500 random selected image from ILSVRC 2012 valid set
+        #     # 1) Remove images where object occupies more than 50% of the whole image
+        #     # 2) consider imaegs with only one bbox for tgt class
+        #     self.pointing_game_scores += compute_localization_energy_pointing_game(scoremap, self.gt_bboxes[image_id][0])
 
         boxes_at_thresholds, number_of_box_list = compute_bboxes_from_scoremaps(
             scoremap=scoremap,
@@ -319,6 +361,9 @@ class BoxEvaluator(LocalizationEvaluator):
                                             float(self.cnt) 
             top1_loc_acc.append(top1_localization_accuracies)
         
+        # if self.pointing_game:
+        #     pointing_game_scores = (self.pointing_game_scores / self.cnt) * 100.0
+        #     return max_box_acc, gt_loc_acc, top1_loc_acc, pointing_game_scores
 
         return max_box_acc, gt_loc_acc, top1_loc_acc
 
@@ -331,7 +376,7 @@ def load_mask_image(file_path, resize_size):
     Returns:
         mask: numpy.ndarray(dtype=numpy.float32, shape=(height, width))
     """
-    ROOT = '/home/yoojinoh/recam-imagenet/' # HARD-CODED
+    ROOT = '/home/yoojinoh/recam-imagenet/' #TODO\
     if '_' in file_path:
         file_path = file_path.replace('OpenImages', 'OpenImages30K_mask')
     mask = np.float32(cv2.imread(os.path.join(ROOT, file_path), cv2.IMREAD_GRAYSCALE))
@@ -355,14 +400,14 @@ def get_mask(mask_root, mask_paths, ignore_path):
     mask_all_instances = []
     for mask_path in mask_paths:
         mask_file = os.path.join(mask_root, mask_path)
-        mask = load_mask_image(mask_file, (_RESIZE_LENGTH, _RESIZE_LENGTH)) 
+        mask = load_mask_image(mask_file, (_RESIZE_LENGTH, _RESIZE_LENGTH)) # 224x224
         mask_all_instances.append(mask > 0.5)
     mask_all_instances = np.stack(mask_all_instances, axis=0).any(axis=0)
 
     ignore_file = os.path.join(mask_root, ignore_path)
 
     ignore_box_mask = load_mask_image(ignore_file,
-                                      (_RESIZE_LENGTH, _RESIZE_LENGTH)) 
+                                      (_RESIZE_LENGTH, _RESIZE_LENGTH)) # 224x224
     ignore_box_mask = ignore_box_mask > 0.5
 
     ignore_mask = np.logical_and(ignore_box_mask,
@@ -401,20 +446,20 @@ class MaskEvaluator(LocalizationEvaluator):
             image_id: string. ex. 'test/01226z/7af766bd43da900b.jpg'
         """
         check_scoremap_validity(scoremap)
-        gt_mask = get_mask(self.mask_root, 
-                           self.mask_paths[image_id], 
+        gt_mask = get_mask(self.mask_root, # 'dataset/OpenImages'
+                           self.mask_paths[image_id], # ['test/01226z/7af766bd43da900b_m01226z_6554d965.png', 'test/01226z/7af766bd43da900b_m01226z_8856c605.png']
                            self.ignore_paths[image_id])
 
-        gt_true_scores = scoremap[gt_mask == 1] 
-        gt_false_scores = scoremap[gt_mask == 0]
+        gt_true_scores = scoremap[gt_mask == 1] # (19539,) ex. np.float32(0.45106578)
+        gt_false_scores = scoremap[gt_mask == 0] # (30637,)
 
         # histograms in ascending order
         gt_true_hist, _ = np.histogram(gt_true_scores,
-                                       bins=self.threshold_list_right_edge) 
+                                       bins=self.threshold_list_right_edge) # (1003,) array([0, 0, 0, ..., 0, 1, 0])
         self.gt_true_score_hist += gt_true_hist.astype(np.float32)
 
         gt_false_hist, _ = np.histogram(gt_false_scores,
-                                        bins=self.threshold_list_right_edge) 
+                                        bins=self.threshold_list_right_edge) # array([3, 3, 2, ..., 0, 0, 0])
         self.gt_false_score_hist += gt_false_hist.astype(np.float32)
 
     def compute(self):
@@ -450,6 +495,7 @@ class MaskEvaluator(LocalizationEvaluator):
         auc = (precision[1:] * np.diff(recall))[non_zero_indices[1:]].sum()
         auc *= 100
 
+        #print("Mask AUC on split {}: {}".format(self.split, auc))
         return float(auc)
 
 
@@ -502,11 +548,12 @@ def evaluate_wsol(scoremap_root, metadata_root, mask_root, dataset_name, split,
     meta_path = os.path.join(metadata_root, dataset_name, split)
     metadata = configure_metadata(meta_path)
     image_ids = get_image_ids(metadata)
-    cam_threshold_list = list(np.arange(0, 1, cam_curve_interval))
+    cam_threshold_list = [0.15] # list(np.arange(0, 1, cam_curve_interval))
 
     evaluator = {"OpenImages": MaskEvaluator,
                  "CUB": BoxEvaluator,
-                 "ILSVRC": BoxEvaluator
+                 "ILSVRC": BoxEvaluator,
+                 "KITTI": BoxEvaluator #수정
                  }[dataset_name](metadata=metadata,
                                  dataset_name=dataset_name,
                                  split=split,
@@ -526,5 +573,45 @@ def evaluate_wsol(scoremap_root, metadata_root, mask_root, dataset_name, split,
     else:
         performance = performance[iou_threshold_list.index(50)]
 
+    print('localization: {}'.format(performance))
     return performance
 
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--scoremap_root', type=str,
+                        default='train_log/scoremaps/',
+                        help="The root folder for score maps to be evaluated.")
+    parser.add_argument('--metadata_root', type=str, default='metadata/',
+                        help="Root folder of metadata.")
+    parser.add_argument('--mask_root', type=str, default='dataset/',
+                        help="Root folder of masks (OpenImages).")
+    parser.add_argument('--dataset_name', type=str,
+                        help="One of [CUB, ImageNet, OpenImages, KITTI].") #수정
+    parser.add_argument('--split', type=str,
+                        help="One of [val, test]. They correspond to "
+                             "train-fullsup and test, respectively.")
+    parser.add_argument('--cam_curve_interval', type=float, default=0.01,
+                        help="At which threshold intervals will the score maps "
+                             "be evaluated?.")
+    parser.add_argument('--multi_contour_eval', type=str2bool, nargs='?',
+                        const=True, default=False)
+    parser.add_argument('--multi_iou_eval', type=str2bool, nargs='?',
+                        const=True, default=False)
+    parser.add_argument('--iou_threshold_list', nargs='+',
+                        type=int, default=[30, 50, 70])
+
+    args = parser.parse_args()
+    evaluate_wsol(scoremap_root=args.scoremap_root,
+                  metadata_root=args.metadata_root,
+                  mask_root=args.mask_root,
+                  dataset_name=args.dataset_name,
+                  split=args.split,
+                  cam_curve_interval=args.cam_curve_interval,
+                  multi_contour_eval=args.multi_contour_eval,
+                  multi_iou_eval=args.multi_iou_eval,
+                  iou_threshold_list=args.iou_threshold_list,)
+
+
+if __name__ == "__main__":
+    main()
