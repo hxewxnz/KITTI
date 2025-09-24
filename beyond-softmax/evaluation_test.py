@@ -160,7 +160,7 @@ def load_evaluator(Evaluator, dataset_name, split, cam_curve_interval,
 
 
 class BoxEvaluatorTest(unittest.TestCase):
-    _DATASET_NAMES = ('CUB', 'ILSVRC')
+    _DATASET_NAMES = ('CUB', 'ILSVRC', 'KITTI') #수정
     _SPLITS = ('val', 'test')
     _CAM_CURVE_INTERVAL = 0.01
     _BOX_VERIFICATION = {
@@ -170,6 +170,13 @@ class BoxEvaluatorTest(unittest.TestCase):
                 [(44, 183, 426, 254)],
                 [(437, 42, 834, 422)],
             ],
+            'test': [
+                [(60, 27, 385, 331)],
+                [(14, 112, 402, 298)],
+                [(33, 53, 284, 448)],
+            ],
+        },
+        'KITTI': { #수정
             'test': [
                 [(60, 27, 385, 331)],
                 [(14, 112, 402, 298)],
@@ -197,6 +204,13 @@ class BoxEvaluatorTest(unittest.TestCase):
                 (576, 432),
                 (999, 587),
             ],
+            'test': [
+                (500, 335),
+                (500, 347),
+                (500, 470),
+            ],
+        },
+        'KITTI': { #수정
             'test': [
                 (500, 335),
                 (500, 347),
