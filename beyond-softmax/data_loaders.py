@@ -26,12 +26,11 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from torchvision import transforms
-import torch 
 
 # default
 _IMAGE_MEAN_VALUE = [0.485, 0.456, 0.406]
 _IMAGE_STD_VALUE = [0.229, 0.224, 0.225]
-_SPLITS = ('train','test')# 'val', 'test')
+_SPLITS = ('train', 'test') 
 
 
 def mch(**kwargs):
@@ -66,23 +65,24 @@ def get_image_ids(metadata, proxy=False):
             image_ids.append(line.strip('\n'))
     return image_ids
 
-
 def get_class_labels(metadata):
-    """
-    image_ids.txt has the structure
-
-    <path>,<integer_class_label>
-    path/to/image1.jpg,0
-    path/to/image2.jpg,1
-    path/to/image3.jpg,1
-    ...
-    """
+    
     class_labels = {}
     with open(metadata.class_labels) as f:
         for line in f.readlines():
             image_id, class_label_string = line.strip('\n').split(',')
             class_labels[image_id] = int(class_label_string)
     return class_labels
+"""
+def get_class_labels(metadata):
+    class_labels = {}
+    with open(metadata.class_labels) as f:
+        for line in f.readlines():
+            image_id, class_label_string = line.strip('\n').split(',')
+            class_label = int(class_label_string) - 1  # ✅ 여기서 -1 적용
+            class_labels[image_id] = class_label
+    return class_labels"""
+
 
 
 def get_bounding_boxes(metadata):
@@ -196,10 +196,12 @@ class WSOLImageLabelDataset(Dataset):
     def __getitem__(self, idx):
         image_id = self.image_ids[idx]
         image_label = self.image_labels[image_id]
+        
         try:
             image = Image.open(os.path.join(self.data_root, image_id))
+            
         except:
-            image = Image.open(os.path.join(self.data_root, f'{self.split}',image_id))
+            image = Image.open(os.path.join(self.data_root, f'cars_{self.split}',image_id))
         image = image.convert('RGB')
         image = self.transform(image)
         return image, image_label, image_id
@@ -208,12 +210,53 @@ class WSOLImageLabelDataset(Dataset):
         return len(self.image_ids)
 
 
+"""def get_data_loader(data_roots, metadata_root, batch_size, workers,
+                    resize_size, crop_size, proxy_training_set,
+                    num_val_sample_per_class=0,
+                    mean=_IMAGE_MEAN_VALUE, std=_IMAGE_STD_VALUE):    
+    dataset_transforms = dict(
+        train=transforms.Compose([
+            transforms.Resize((resize_size, resize_size)),
+            transforms.RandomCrop(crop_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std)
+        ]),
+        val=transforms.Compose([
+            transforms.Resize((crop_size, crop_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std)
+        ]),
+        test=transforms.Compose([
+            transforms.Resize((crop_size, crop_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std)
+        ]))
+
+
+    loaders = {
+        split: DataLoader(
+            WSOLImageLabelDataset(
+                data_root=data_roots[split],
+                split=split, 
+                metadata_root=os.path.join(metadata_root, split),
+                transform=dataset_transforms[split],
+                proxy=proxy_training_set and split == 'train',
+                num_sample_per_class=(num_val_sample_per_class
+                                      if split == 'val' else 0)
+            ),
+            batch_size=batch_size,
+            shuffle=split == 'train',
+            num_workers=workers)
+        for split in _SPLITS
+    }
+    return loaders"""
+
 def get_data_loader(data_roots, metadata_root, batch_size, workers,
                     resize_size, crop_size, proxy_training_set,
                     num_val_sample_per_class=0,
-                    mean=_IMAGE_MEAN_VALUE, std=_IMAGE_STD_VALUE):
-    print(f'==> mean = {mean}, std = {std}')
-    
+                    mean=_IMAGE_MEAN_VALUE, std=_IMAGE_STD_VALUE,
+                    size_group=None):   # ← 추가
     dataset_transforms = dict(
         train=transforms.Compose([
             transforms.Resize((resize_size, resize_size)),
@@ -239,12 +282,11 @@ def get_data_loader(data_roots, metadata_root, batch_size, workers,
             WSOLImageLabelDataset(
                 data_root=data_roots[split],
                 split=split,
-                 # 'train', 'val', 'test'
-                metadata_root=os.path.join(metadata_root, split),
+                metadata_root=(os.path.join(metadata_root, split, size_group)
+                               if size_group else os.path.join(metadata_root, split)),
                 transform=dataset_transforms[split],
                 proxy=proxy_training_set and split == 'train',
-                num_sample_per_class=(num_val_sample_per_class
-                                      if split == 'val' else 0)
+                num_sample_per_class=(num_val_sample_per_class if split == 'val' else 0)
             ),
             batch_size=batch_size,
             shuffle=split == 'train',
